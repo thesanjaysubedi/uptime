@@ -14,20 +14,17 @@ import (
 //go:embed templates/*
 var templateFS embed.FS
 
-// Endpoint represents a service endpoint to monitor
 type Endpoint struct {
 	Name string `json:"name"`
 	URL  string `json:"url"`
 }
 
-// DowntimeRecord stores information about a downtime incident
 type DowntimeRecord struct {
 	Timestamp time.Time `json:"timestamp"`
 	Duration  string    `json:"duration"`
 	Reason    string    `json:"reason"`
 }
 
-// StatusRecord represents a single status check
 type StatusRecord struct {
 	Timestamp    time.Time `json:"timestamp"`
 	IsUp         bool      `json:"isUp"`
@@ -36,7 +33,6 @@ type StatusRecord struct {
 	Error        string    `json:"error,omitempty"`
 }
 
-// EndpointStatus represents the current and historical status of an endpoint
 type EndpointStatus struct {
 	Name           string           `json:"name"`
 	URL            string           `json:"url"`
@@ -50,25 +46,22 @@ var (
 	endpoints      = make(map[string]Endpoint)
 	endpointStatus = make(map[string]*EndpointStatus)
 	mu             sync.RWMutex
-	checkInterval  = 30 * time.Minute
-	historyWindow  = 10 * time.Hour
+	// Changed check interval to 30 seconds for testing
+	checkInterval = 30 * time.Second
+	historyWindow = 10 * time.Hour
 )
 
 func main() {
-	// Create a new router
 	mux := http.NewServeMux()
 
 	// API endpoints
 	mux.HandleFunc("/api/endpoint", handleEndpoint)
 	mux.HandleFunc("/api/status", handleCORS(getStatus))
-
-	// Serve the dashboard
 	mux.HandleFunc("/", serveDashboard)
 
 	// Start the monitoring goroutine
 	go monitorEndpoints()
 
-	// Start the server
 	fmt.Println("Server starting on :8080...")
 	log.Fatal(http.ListenAndServe(":8080", mux))
 }
@@ -87,6 +80,7 @@ func handleCORS(next http.HandlerFunc) http.HandlerFunc {
 		next(w, r)
 	}
 }
+
 func serveDashboard(w http.ResponseWriter, r *http.Request) {
 	tmpl, err := template.ParseFS(templateFS, "templates/index.html")
 	if err != nil {
@@ -99,7 +93,6 @@ func serveDashboard(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleEndpoint(w http.ResponseWriter, r *http.Request) {
-	// Add CORS headers
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
@@ -121,10 +114,15 @@ func handleEndpoint(w http.ResponseWriter, r *http.Request) {
 		endpointStatus[endpoint.Name] = &EndpointStatus{
 			Name:           endpoint.Name,
 			URL:            endpoint.URL,
+			CurrentStatus:  "Pending",
+			LastChecked:    time.Now(),
 			History:        make([]StatusRecord, 0),
 			RecentDowntime: make([]DowntimeRecord, 0),
 		}
 		mu.Unlock()
+
+		// Immediately check the new endpoint
+		go checkEndpoint(endpoint)
 
 		w.WriteHeader(http.StatusCreated)
 		json.NewEncoder(w).Encode(endpoint)
@@ -135,36 +133,8 @@ func getStatus(w http.ResponseWriter, r *http.Request) {
 	mu.RLock()
 	defer mu.RUnlock()
 
-	statusCopy := make(map[string]EndpointStatus)
-	for name, status := range endpointStatus {
-		// Filter history to last 10 hours
-		cutoff := time.Now().Add(-historyWindow)
-		filteredHistory := []StatusRecord{}
-		for _, record := range status.History {
-			if record.Timestamp.After(cutoff) {
-				filteredHistory = append(filteredHistory, record)
-			}
-		}
-
-		// Copy status with limited history
-		statusCopy[name] = EndpointStatus{
-			Name:           status.Name,
-			URL:            status.URL,
-			CurrentStatus:  status.CurrentStatus,
-			LastChecked:    status.LastChecked,
-			History:        filteredHistory,
-			RecentDowntime: getLast5Downtimes(status.RecentDowntime),
-		}
-	}
-
-	json.NewEncoder(w).Encode(statusCopy)
-}
-
-func getLast5Downtimes(downtimes []DowntimeRecord) []DowntimeRecord {
-	if len(downtimes) <= 5 {
-		return downtimes
-	}
-	return downtimes[len(downtimes)-5:]
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(endpointStatus)
 }
 
 func monitorEndpoints() {
@@ -192,7 +162,11 @@ func checkAllEndpoints() {
 
 func checkEndpoint(endpoint Endpoint) {
 	start := time.Now()
-	resp, err := http.Get(endpoint.URL)
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+	}
+
+	resp, err := client.Get(endpoint.URL)
 	responseTime := time.Since(start).Seconds()
 
 	status := StatusRecord{
@@ -210,10 +184,9 @@ func checkEndpoint(endpoint Endpoint) {
 			Reason:    err.Error(),
 		}
 	} else {
-		status.IsUp = true
 		status.StatusCode = resp.StatusCode
-		if resp.StatusCode >= 400 {
-			status.IsUp = false
+		status.IsUp = resp.StatusCode < 400
+		if !status.IsUp {
 			downtime = &DowntimeRecord{
 				Timestamp: time.Now(),
 				Duration:  "ongoing",
@@ -225,24 +198,25 @@ func checkEndpoint(endpoint Endpoint) {
 
 	mu.Lock()
 	if s, exists := endpointStatus[endpoint.Name]; exists {
-		s.LastChecked = time.Now()
+		s.LastChecked = status.Timestamp
 		s.CurrentStatus = getStatusString(status.IsUp)
 		s.History = append(s.History, status)
 
-		// Add downtime record if service is down
 		if downtime != nil {
-			// Update duration of previous downtime if it exists
 			if len(s.RecentDowntime) > 0 {
 				lastDowntime := &s.RecentDowntime[len(s.RecentDowntime)-1]
 				if lastDowntime.Duration == "ongoing" {
 					duration := time.Since(lastDowntime.Timestamp)
-					lastDowntime.Duration = duration.String()
+					lastDowntime.Duration = duration.Round(time.Second).String()
 				}
 			}
 			s.RecentDowntime = append(s.RecentDowntime, *downtime)
+			if len(s.RecentDowntime) > 5 {
+				s.RecentDowntime = s.RecentDowntime[len(s.RecentDowntime)-5:]
+			}
 		}
 
-		// Cleanup old history (older than 10 hours)
+		// Cleanup old history
 		cutoff := time.Now().Add(-historyWindow)
 		newHistory := []StatusRecord{}
 		for _, record := range s.History {
