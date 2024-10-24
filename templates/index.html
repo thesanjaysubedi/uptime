@@ -76,7 +76,7 @@
     <script>
         // Fetch and update data every 30 seconds
         function updateDashboard() {
-            fetch('http://localhost:8080/status')
+            fetch('/api/status')
                 .then(response => response.json())
                 .then(data => {
                     updateStats(data);
@@ -154,7 +154,7 @@
             const name = document.getElementById('endpointName').value;
             const url = document.getElementById('endpointUrl').value;
 
-            fetch('http://localhost:8080/endpoint', {
+            fetch('/api/endpoint', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
