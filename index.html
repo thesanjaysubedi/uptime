@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Uptime Monitor Dashboard</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tailwindcss/2.2.19/tailwind.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/moment.js/2.29.1/moment.min.js"></script>
+</head>
+<body class="bg-gray-50">
+    <div class="min-h-screen">
+        <!-- Header -->
+        <header class="bg-white shadow-sm">
+            <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
+                <div class="flex justify-between items-center">
+                    <h1 class="text-2xl font-bold text-gray-900">Uptime Monitor</h1>
+                    <button onclick="addNewEndpoint()" class="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500">
+                        Add Endpoint
+                    </button>
+                </div>
+            </div>
+        </header>
+
+        <!-- Main Content -->
+        <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+            <!-- Status Overview -->
+            <div class="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3 mb-8">
+                <div class="bg-white overflow-hidden shadow rounded-lg">
+                    <div class="px-4 py-5 sm:p-6">
+                        <div class="text-sm font-medium text-gray-500">Total Endpoints</div>
+                        <div class="mt-1 text-3xl font-semibold text-gray-900" id="totalEndpoints">0</div>
+                    </div>
+                </div>
+                <div class="bg-white overflow-hidden shadow rounded-lg">
+                    <div class="px-4 py-5 sm:p-6">
+                        <div class="text-sm font-medium text-gray-500">Healthy Endpoints</div>
+                        <div class="mt-1 text-3xl font-semibold text-green-600" id="healthyEndpoints">0</div>
+                    </div>
+                </div>
+                <div class="bg-white overflow-hidden shadow rounded-lg">
+                    <div class="px-4 py-5 sm:p-6">
+                        <div class="text-sm font-medium text-gray-500">Issues Detected</div>
+                        <div class="mt-1 text-3xl font-semibold text-red-600" id="issuesDetected">0</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Endpoints List -->
+            <div class="bg-white shadow rounded-lg" id="endpointsList">
+                <!-- Endpoints will be dynamically added here -->
+            </div>
+        </main>
+    </div>
+
+    <!-- Add Endpoint Modal -->
+    <div id="addEndpointModal" class="hidden fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center">
+        <div class="bg-white rounded-lg p-6 max-w-md w-full">
+            <h2 class="text-lg font-medium mb-4">Add New Endpoint</h2>
+            <div class="space-y-4">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700">Name</label>
+                    <input type="text" id="endpointName" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700">URL</label>
+                    <input type="text" id="endpointUrl" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500">
+                </div>
+                <div class="flex justify-end space-x-3">
+                    <button onclick="closeModal()" class="bg-gray-200 px-4 py-2 rounded-md hover:bg-gray-300">Cancel</button>
+                    <button onclick="submitEndpoint()" class="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700">Add</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Fetch and update data every 30 seconds
+        function updateDashboard() {
+            fetch('http://localhost:8080/status')
+                .then(response => response.json())
+                .then(data => {
+                    updateStats(data);
+                    updateEndpointsList(data);
+                });
+        }
+
+        function updateStats(data) {
+            const endpoints = Object.values(data);
+            const total = endpoints.length;
+            const healthy = endpoints.filter(e => e.currentStatus === 'UP').length;
+            const issues = total - healthy;
+
+            document.getElementById('totalEndpoints').textContent = total;
+            document.getElementById('healthyEndpoints').textContent = healthy;
+            document.getElementById('issuesDetected').textContent = issues;
+        }
+
+        function updateEndpointsList(data) {
+            const container = document.getElementById('endpointsList');
+            container.innerHTML = '';
+
+            Object.values(data).forEach(endpoint => {
+                const statusColor = endpoint.currentStatus === 'UP' ? 'green' : 'red';
+                const lastCheck = moment(endpoint.lastChecked).fromNow();
+
+                const endpointHtml = `
+                    <div class="border-b border-gray-200 p-6">
+                        <div class="flex items-center justify-between mb-4">
+                            <div>
+                                <h3 class="text-lg font-medium text-gray-900">${endpoint.name}</h3>
+                                <p class="text-sm text-gray-500">${endpoint.url}</p>
+                            </div>
+                            <span class="px-3 py-1 rounded-full text-sm font-medium bg-${statusColor}-100 text-${statusColor}-800">
+                                ${endpoint.currentStatus}
+                            </span>
+                        </div>
+                        
+                        <div class="mt-4">
+                            <p class="text-sm text-gray-500">Last checked: ${lastCheck}</p>
+                        </div>
+
+                        <!-- Recent Downtimes -->
+                        ${endpoint.recentDowntime.length > 0 ? `
+                            <div class="mt-4">
+                                <h4 class="text-sm font-medium text-gray-900 mb-2">Recent Downtimes</h4>
+                                <div class="space-y-2">
+                                    ${endpoint.recentDowntime.map(downtime => `
+                                        <div class="text-sm text-gray-600">
+                                            <span>${moment(downtime.timestamp).format('MMM D, HH:mm')}</span>
+                                            <span class="mx-2">·</span>
+                                            <span>${downtime.duration}</span>
+                                            <span class="mx-2">·</span>
+                                            <span class="text-red-600">${downtime.reason}</span>
+                                        </div>
+                                    `).join('')}
+                                </div>
+                            </div>
+                        ` : ''}
+                    </div>
+                `;
+                container.innerHTML += endpointHtml;
+            });
+        }
+
+        function addNewEndpoint() {
+            document.getElementById('addEndpointModal').classList.remove('hidden');
+        }
+
+        function closeModal() {
+            document.getElementById('addEndpointModal').classList.add('hidden');
+        }
+
+        function submitEndpoint() {
+            const name = document.getElementById('endpointName').value;
+            const url = document.getElementById('endpointUrl').value;
+
+            fetch('http://localhost:8080/endpoint', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ name, url }),
+            })
+            .then(() => {
+                closeModal();
+                updateDashboard();
+            });
+        }
+
+        // Initial load
+        updateDashboard();
+        // Update every 30 seconds
+        setInterval(updateDashboard, 30000);
+    </script>
+</body>
+</html>
